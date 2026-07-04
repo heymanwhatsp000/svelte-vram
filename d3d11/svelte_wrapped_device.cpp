@@ -132,7 +132,7 @@ HRESULT STDMETHODCALLTYPE WrappedDevice::CreateTexture2D(const D3D11_TEXTURE2D_D
 // the SRV desc's MostDetailedMip/MipLevels to the actual (reduced) count.
 //
 // stale entry fix:
-// On streaming engines (Witcher 3), textures are constantly created/destroyed.
+// On streaming engines (), textures are constantly created/destroyed.
 // When a stripped texture is released, the OS may reuse its pointer for a NEW
 // texture. The map still has the old entry → the new texture gets incorrectly
 // clamped → black textures.

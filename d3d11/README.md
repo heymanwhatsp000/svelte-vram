@@ -8,7 +8,6 @@ How the D3D11 proxy DLL works internally, how to build it, and what features it 
 - **Output**: `d3d11.dll`, ~200 KB, 64-bit x64.
 - **Build toolchain**: Microsoft Visual Studio 2022 Build Tools, MSVC `cl.exe`, C++14.
 - **External dependencies**: None (only Windows D3D11 headers).
-- **Validated on**: Skyrim Special Edition, GTX 1080 8GB, 75.9% VRAM reduction.
 
 ## File Layout
 
@@ -121,9 +120,6 @@ First found gets loaded as the real D3D11. If none found, falls back to `C:\Wind
 At load time Svelte checks the host exe basename and sets a game profile:
 
 - `skyrimse.exe` - Skyrim SE. All BCn formats safe to strip.
-- `fallout4.exe` - Fallout 4. BC3/BC7 may be specular. Restricts aggressive modes to BC1.
-- `witcher3.exe` - Witcher 3. Streaming engine. Conservative mode recommended.
-
 
 ## StripMips - the core algorithm
 
@@ -240,7 +236,3 @@ Log levels:
 
 2. **Deferred texture uploads skip stripping.** If a game creates a texture with `pInitialData = NULL` and later fills it via `UpdateSubresource`, Svelte cannot intercept this.
 
-## Future work
-
-- Per-game tuning profiles.
-- D3D12 port (9 device interfaces, command-list interception, explicit residency control).

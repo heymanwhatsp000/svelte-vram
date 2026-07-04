@@ -8,7 +8,7 @@
 // D3DFMT_DXT5 = BC3 (16 bytes/block, interpolated alpha)
 //
 // No BC4/BC5/BC6H/BC7 in D3D9 - those are D3D11-only formats. D3D9 games
-// (FNV, Skyrim LE, FO3) use only DXT1/DXT3/DXT5.
+// (FNV, FO3) use only DXT1/DXT3/DXT5.
 #pragma once
 #include <windows.h>
 #include <d3d9.h>

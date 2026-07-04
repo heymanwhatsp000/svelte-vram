@@ -8,7 +8,6 @@ How the D3D9 proxy DLL works internally, how to build it, and what features it h
 - **Output**: `d3d9.dll`, ~155 KB, **32-bit x86** (D3D9 games are old, almost all 32-bit).
 - **Build toolchain**: Microsoft Visual Studio 2022 Build Tools, MSVC `cl.exe` (32-bit), C++14.
 - **External dependencies**: None (only Windows D3D9 headers).
-- **Validated on**: Fallout New Vegas, GTX 1080 8GB, 920 MB VRAM saved per session, ENB coexisting.
 
 ## File Layout
 

@@ -98,14 +98,13 @@ std::string GetBasenameLower(const char* path) {
 // Different games use BCn formats differently:
 // - Skyrim SE: BC3/BC7 are safe to strip (separate specular files)
 // - Fallout 4: BC3/BC7 may be specular (causes rainbow if stripped aggressively)
-// - Witcher 3: BC3 is safe but game creates swap chain via IDXGIFactory
 //
 // The DLL detects which game it's loaded into and overrides strip_formats
 // for aggressive/maximum/custom modes to prevent artifacts.
 // Conservative mode is always safe regardless of game (only strips 4K+ textures).
 //
 // This is stored as a global so StripMips can check it without re-detecting.
-static int g_gameProfile = 0; // 0=unknown/generic, 1=skyrim_se, 2=fallout_4, 3=witcher_3
+static int g_gameProfile = 0; // 0=unknown/generic, 1=skyrim_se, 2=fallout_4
 
 void DetectGameProfile() {
  char exePath[MAX_PATH] = {0};
@@ -118,10 +117,7 @@ void DetectGameProfile() {
  } else if (basename == "fallout4.exe") {
  g_gameProfile = 2;
  Log("Game profile: Fallout 4 (BC3/BC7 may be specular - restricting aggressive modes to BC1)");
- } else if (basename == "witcher3.exe") {
- g_gameProfile = 3;
- Log("Game profile: Witcher 3 (streaming engine - conservative mode recommended)");
- } else {
+    } else {
  g_gameProfile = 0;
  Log("Game profile: Unknown (%s) - using generic safe defaults", basename.c_str());
  }

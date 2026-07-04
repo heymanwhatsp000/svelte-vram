@@ -4,8 +4,8 @@
 
 ### Step 1: Pick the right build
 
-- **For Skyrim SE, Witcher 3, and other D3D11 games**: use `d3d11.dll`
-- **For Fallout New Vegas, Skyrim LE, Fallout 3, and other D3D9 games**: use `d3d9.dll`
+- **For Skyrim SE**: use `d3d11.dll`
+- **For Fallout New Vegas, Fallout 3, and other D3D9 games**: use `d3d9.dll`
 
 ### Step 2: Locate your game's executable folder
 
@@ -13,8 +13,6 @@ The DLL and `svelte.ini` must sit next to the game's exe. Examples:
 
 - Skyrim SE: `C:\Games\Skyrim\` (where `SkyrimSE.exe` lives)
 - Fallout New Vegas: `C:\Games\Fallout New Vegas\` (where `FalloutNV.exe` lives)
-
-If you use Mod Organizer 2, you need the MO2 "Root Builder" plugin to get the DLL into the actual game folder.
 
 ### Step 3: Handle ENB if installed
 
@@ -54,16 +52,6 @@ log_level=2
 - `min_texture_dimension` - Don't strip textures smaller than this. Default 64. Raise to 128 if small textures look wrong.
 - `log_level` - 0=off, 1=basic, 2=verbose (recommended for debugging), 3=debug (every texture).
 
-### Tuning advice
-
-- **8GB+ VRAM**: start at `max_resolution=2048`. ~50% reduction, no visible quality loss.
-- **6-8GB VRAM**: `max_resolution=1024`. ~60% reduction, slight softness.
-- **4-6GB VRAM**: `max_resolution=512`. ~70% reduction, visibly softer but playable.
-- **2-4GB VRAM**: `max_resolution=256`. ~73% reduction, emergency setting.
-- **Under 2GB**: `max_resolution=128`. ~77% reduction, very blurry.
-
-## Troubleshooting
-
 ### Svelte did not load (no svelte.log)
 1. Verify the DLL is named `d3d11.dll` (or `d3d9.dll`) and sits next to the game's exe.
 2. Verify `svelte.ini` is in the same folder.
@@ -76,9 +64,6 @@ log_level=2
 
 ### Black textures
 This should not happen with current versions. If it does, check `svelte.log` for `STALE ENTRY` warnings and report on the bug tracker.
-
-### Antivirus flags the DLL
-This is a false positive. The DLL hijacking technique is also used by malware, so AVs flag clean proxy DLLs at 5-15% rates. ENB and ReShade have the same issue. Add the game folder to your AV exclusions.
 
 ### Game runs but no VRAM reduction
 1. Check `svelte.log` for `Textures stripped: 0`. The game might use deferred texture uploads.
