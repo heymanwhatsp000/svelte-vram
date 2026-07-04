@@ -1,0 +1,8 @@
+EXPORTS
+    D3D11CreateDevice = MyCreateDevice
+    D3D11CreateDeviceAndSwapChain = MyCreateDeviceAndSwapChain
+    D3D11CoreCreateDevice          = d3d11.D3D11CoreCreateDevice
+    D3D11CoreCreateLayeredDevice   = d3d11.D3D11CoreCreateLayeredDevice
+    D3D11CoreGetLayeredDeviceSize  = d3d11.D3D11CoreGetLayeredDeviceSize
+    D3D11CoreRegisterLayers        = d3d11.D3D11CoreRegisterLayers
+    D3D11On12CreateDevice          = d3d11.D3D11On12CreateDevice

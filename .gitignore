@@ -1,0 +1,30 @@
+# Build artifacts
+build/
+*.obj
+*.lib
+*.exp
+*.dll
+*.pdb
+*.ilk
+
+# Logs
+*.log
+svelte.log
+
+# Editor files
+.vs/
+.vscode/
+*.user
+*.suo
+*.sln.docstates
+
+# OS files
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Backups and archives (internal only)
+_backup/
+_archive/
+protected/
+ship/
