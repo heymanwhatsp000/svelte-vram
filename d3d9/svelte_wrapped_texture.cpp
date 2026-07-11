@@ -15,12 +15,17 @@
 std::unordered_set<WrappedTexture9*> WrappedTexture9::s_liveWrappers;
 SRWLOCK WrappedTexture9::s_wrapperLock = SRWLOCK_INIT;
 std::unordered_map<IDirect3DBaseTexture9*, WrappedTexture9*> WrappedTexture9::s_realToWrapper;
+void* WrappedTexture9::s_wrapperVtable = NULL;
 
 WrappedTexture9::WrappedTexture9(IDirect3DTexture9* real, const StrippedTexEntry& entry, D3DPOOL pool)
     : m_real(real), m_entry(entry), m_refCount(1), m_pool(pool), m_locksLock(SRWLOCK_INIT)
 {
-    // m_real's refcount was already incremented by the caller (CreateTexture
-    // returned it with refcount=1, and we hold that reference).
+    // Cache our vtable pointer on first construction.
+    // In MSVC, the vtable pointer is at offset 0 of any object with virtual
+    // functions. All WrappedTexture9 instances share the same vtable.
+    if (s_wrapperVtable == NULL) {
+        s_wrapperVtable = *(void**)this;
+    }
 
     // Register this wrapper in the live set so SetTexture can detect it.
     // Also register in the reverse map so GetTexture can re-wrap.
@@ -58,21 +63,31 @@ WrappedTexture9::~WrappedTexture9() {
 
 // Static: check if a texture pointer is a WrappedTexture9 and unwrap it.
 // Returns the real underlying texture if it's a wrapper, or the input if not.
+//
+// FAST PATH: vtable pointer comparison. No lock, no hash lookup.
+// This is called from SetTexture on EVERY texture bind (hundreds per frame).
+// The old version acquired a shared lock + did a hash map lookup — that
+// caused stutter when many textures were bound in rapid succession.
+//
+// The vtable pointer is at offset 0 of any MSVC C++ object with virtual
+// functions. All WrappedTexture9 instances share the same vtable, so
+// comparing the pointer is a reliable identity check in O(1) with zero
+// contention.
 IDirect3DBaseTexture9* WrappedTexture9::UnwrapIfWrapper(IDirect3DBaseTexture9* tex) {
     if (!tex) return tex;
-    AcquireSRWLockShared(&s_wrapperLock);
-    // We need to check if `tex` is actually a WrappedTexture9*. Since the
-    // set stores WrappedTexture9* pointers, we cast and check membership.
-    // This is safe because only WrappedTexture9 constructors insert into
-    // the set, and only the destructor removes.
-    auto it = s_liveWrappers.find(reinterpret_cast<WrappedTexture9*>(tex));
-    if (it != s_liveWrappers.end()) {
-        IDirect3DTexture9* real = (*it)->m_real;
-        ReleaseSRWLockShared(&s_wrapperLock);
-        return real;
+    // If no wrappers have been created yet, s_wrapperVtable is NULL.
+    // Any valid COM object has a non-NULL vtable, so this correctly
+    // returns tex unchanged.
+    if (s_wrapperVtable == NULL) return tex;
+    
+    // Check vtable pointer — single memory read, no lock
+    if (*(void**)tex != s_wrapperVtable) {
+        return tex;  // Not a wrapper — return unchanged (fast path)
     }
-    ReleaseSRWLockShared(&s_wrapperLock);
-    return tex;
+    
+    // It IS a wrapper — cast and return the real texture
+    WrappedTexture9* wrapper = reinterpret_cast<WrappedTexture9*>(tex);
+    return wrapper->m_real;
 }
 
 // Find the wrapper for a given real texture pointer.

@@ -5,7 +5,7 @@
 #include <stdarg.h>
 #include <ctype.h>
 
-const char* SVELTE_VERSION = "v1.2.0";
+const char* SVELTE_VERSION = "v1.2.1";
 
 // Config globals
 bool g_initialized = false;

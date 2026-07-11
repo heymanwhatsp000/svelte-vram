@@ -1,6 +1,11 @@
 # Changelog
 
-## v1.2.0
+## v1.2.1
+
+### D3D9 — performance fixes
+
+- Fixed verbose logging enabled by default in release config (caused disk I/O during texture loading)
+- Optimized SetTexture hot path: vtable comparison instead of hash lookup (zero lock contention)
 
 ### D3D9 — rewritten texture handling
 

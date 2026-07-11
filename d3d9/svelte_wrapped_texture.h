@@ -70,6 +70,13 @@ private:
     static std::unordered_set<WrappedTexture9*> s_liveWrappers;
     static SRWLOCK s_wrapperLock;
 
+    // Cached vtable pointer for fast wrapper detection.
+    // Set by the first WrappedTexture9 constructor. Used by UnwrapIfWrapper
+    // to check if a texture is a wrapper WITHOUT acquiring a lock or doing
+    // a hash map lookup. This is the hot path (called from SetTexture every
+    // frame for every texture).
+    static void* s_wrapperVtable;
+
     // Reverse map: real texture pointer -> wrapper.
     // Used by GetTexture to re-wrap the result.
     static std::unordered_map<IDirect3DBaseTexture9*, WrappedTexture9*> s_realToWrapper;
