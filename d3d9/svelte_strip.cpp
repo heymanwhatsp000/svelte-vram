@@ -10,8 +10,10 @@
 // 4. Not a render target (Usage & D3DUSAGE_RENDERTARGET)
 // 5. Not a depth stencil (Usage & D3DUSAGE_DEPTHSTENCIL)
 // 6. Not dynamic (Usage & D3DUSAGE_DYNAMIC)
+// 6.5. Not auto-gen mips (Usage & D3DUSAGE_AUTOGENMIPMAP) [v1.1+ added]
 // 7. Format must be DXT1/DXT3/DXT5 (BCn)
 // 8. Width/Height >= min_texture_dimension
+// 9. Not in exclusion list (pattern match against fingerprint) [v1.1+ added]
 //
 // Same simplified loop as D3D11
 // while (dim > max_resolution) { dim >>= 1; mipsToStrip++; }
@@ -62,6 +64,15 @@ int StripMips9(const D3D9_TEXTURE_DESC* pDesc,
  return 0;
  }
 
+ // Condition 6.5: Auto-gen mipmaps (D3D11 equivalent: GENERATE_MIPS check)
+ // D3DUSAGE_AUTOGENMIPMAP means the driver will auto-generate the mip chain.
+ // If we strip mips, the driver would try to auto-gen the wrong levels.
+ // This is especially dangerous in D3D11-style mode (no sysmem backing).
+ if (pDesc->Usage & D3DUSAGE_AUTOGENMIPMAP) {
+ if (g_logLevel >= 2) Log(" skip: AUTOGENMIPMAP");
+ return 0;
+ }
+
  // Condition 7: Must be BCn (DXT1/DXT3/DXT5)
  if (!IsStrippableFormat(pDesc->Format)) {
  if (g_logLevel >= 2) Log(" skip: not BCn (fmt=%s)", FormatName(pDesc->Format));
@@ -71,6 +82,16 @@ int StripMips9(const D3D9_TEXTURE_DESC* pDesc,
  // Condition 8: Dimensions check
  if (pDesc->Width < (UINT)g_minTexDim || pDesc->Height < (UINT)g_minTexDim) {
  if (g_logLevel >= 2) Log(" skip: dim < min (%ux%u < %d)", pDesc->Width, pDesc->Height, g_minTexDim);
+ return 0;
+ }
+
+ // Condition 9: Exclusion list check (ported from D3D11)
+ // Pattern-based: matches against "WIDTHxHEIGHT_FORMAT_mipLEVELS" fingerprint.
+ // Zero-cost when no patterns loaded (early return in IsExcluded).
+ if (IsExcluded(pDesc)) {
+ if (g_logLevel >= 2) Log(" skip: EXCLUSION LIST match (%ux%u_%s_mip%u)",
+ pDesc->Width, pDesc->Height, FormatName(pDesc->Format), pDesc->Levels);
+ g_texturesSkippedByExclusion.fetch_add(1);
  return 0;
  }
 

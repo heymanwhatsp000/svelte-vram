@@ -14,7 +14,7 @@ The result: a GTX 1060 6GB can run a heavily-modded Skyrim loadout. An RTX 3060 
 Svelte uses DLL hijacking - a standard Windows pattern also used by ENB, ReShade, and SpecialK - to intercept DirectX calls. When the game creates a texture, Svelte silently shrinks it before it hits VRAM. When the game creates a shader view, Svelte clamps the mip range to prevent black textures.
 
 - **D3D11** (Skyrim SE, etc.): intercepts `CreateTexture2D` and `CreateShaderResourceView`
-- **D3D9** (Fallout New Vegas, Fallout 3): uses a system-memory-backing approach that handles D3D9's deferred texture upload pattern
+- **D3D9** (Fallout New Vegas, Fallout 3): uses a transient-buffer approach that handles D3D9's deferred texture upload pattern with zero permanent RAM cost. Works with and without DXVK.
 
 ### For Players
 
@@ -44,7 +44,7 @@ cd d3d9
 build_proxy.bat
 ```
 
-Output: `d3d9\build\d3d9.dll` (~155 KB, 32-bit x86).
+Output: `d3d9\build\d3d9.dll` (~168 KB, 32-bit x86).
 
 ## Configuration
 
@@ -57,6 +57,13 @@ enabled=1
 min_texture_dimension=64
 log_level=2
 ```
+
+### Texture Exclusion List (D3D9 v1.1+)
+
+Create a `svelte_exclusions.txt` file next to the DLL to prevent specific
+textures from being stripped. Patterns are substring-matched against a
+fingerprint like `4096x4096_DXT5_mip13`. See `d3d9/svelte_exclusions.txt`
+for examples.
 
 ## Project Structure
 

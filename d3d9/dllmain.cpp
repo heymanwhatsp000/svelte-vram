@@ -1,14 +1,25 @@
 // dllmain.cpp - D3D9 Proxy DLL entry point (Svelte)
-// Intercepts Direct3DCreate9 / Direct3DCreate9Ex via DLL hijacking.
-// Wraps IDirect3D9 -> WrappedD3D9 -> CreateDevice -> WrappedDevice9
-// -> CreateTexture (sysmem backing + stripped VRAM) + SetTexture (copy)
+// Kept small on purpose - just DllMain + the two exported
+// functions (MyDirect3DCreate9, MyDirect3DCreate9Ex). All logic
+// lives in the svelte_*.cpp modules.
+//
+// Modules:
+// svelte_util.cpp - config, logging, BCn helpers, exclusions
+// svelte_strip.cpp - mip selection + StripMips9
+// svelte_registry.cpp - stripped-texture map (SRWLOCK + LRU)
+// svelte_wrapped_texture.cpp - WrappedTexture9 (transient buffer approach)
+// svelte_wrapped_device.cpp - WrappedDevice9 (CreateTexture + SetTexture)
+// svelte_wrapped_d3d9.cpp - WrappedD3D9 (CreateDevice intercept)
+//
+// DLL hijack (Windows search order) → MyDirect3DCreate9 wraps IDirect3D9
+// → WrappedD3D9::CreateDevice wraps device → WrappedDevice9::CreateTexture
+// strips mips → WrappedTexture9 maintains the API-surface lie
+// → WrappedDevice9::SetTexture unwraps before binding
 //
 // CHAIN SUPPORT:
 // At load time, checks for chain DLLs in the game folder:
-// d3d9_enb.dll (ENB)
-// d3d9_reshade.dll (ReShade)
-// d3d9_orig.dll (any tool)
-// d3d9_chain.dll (generic chain name)
+// d3d9_enb.dll (ENB), d3d9_reshade.dll (ReShade), d3d9_dxvk.dll (DXVK),
+// d3d9_orig.dll (any tool), d3d9_chain.dll (generic)
 // If found, loads that as the "real" d3d9.dll instead of System32.
 // User just renames the other tool's DLL + drops Svelte in. No INI edit.
 #define WIN32_LEAN_AND_MEAN
@@ -153,6 +164,30 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD dwReason, LPVOID lpReserved) {
  }
  if (!g_realD3D9) return FALSE;
 
+ // DXVK backend detection. Two checks:
+ //
+ // 1. Did WE load d3d9_dxvk.dll directly? (DXVK is the immediate backend)
+ // 2. Does d3d9_dxvk.dll exist in our folder? (DXVK is behind another
+ //    chain DLL like d3d9_enb.dll — ENB forwards to DXVK internally)
+ //
+ // Both must set the flag BEFORE LoadConfig so it logs the correct backend.
+ if (g_loadedChainName && strstr(g_loadedChainName, "dxvk")) {
+ g_dxvkBackend = true;
+ }
+ if (!g_dxvkBackend) {
+ // Check if d3d9_dxvk.dll exists in our folder. Covers the ENB+DXVK
+ // triple-chain case where Svelte loads d3d9_enb.dll, but ENB chains
+ // to d3d9_dxvk.dll internally. DXVK is still the ultimate backend,
+ // so the transient buffer approach is safe and preferred.
+ char dxvkPath[MAX_PATH];
+ snprintf(dxvkPath, MAX_PATH, "%s\\d3d9_dxvk.dll", dllPath);
+ if (GetFileAttributesA(dxvkPath) != INVALID_FILE_ATTRIBUTES) {
+ g_dxvkBackend = true;
+ // Note: actual logging happens in LoadConfig() once g_logFile opens.
+ // The log line "Backend: dxvk_detected=1" will show the detection result.
+ }
+ }
+
  LoadConfig();
  break;
  }
@@ -162,8 +197,10 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD dwReason, LPVOID lpReserved) {
  Log("============================================================");
  Log(" Textures created: %d", g_texturesCreated.load());
  Log(" Textures stripped: %d", g_texturesStripped.load());
- Log(" Textures skipped: %d", g_texturesSkipped.load());
+ Log(" Textures skipped (filter): %d", g_texturesSkipped.load());
+ Log(" Textures skipped (exclusion): %d", g_texturesSkippedByExclusion.load());
  Log(" Textures failed: %d", g_texturesFailed.load());
+ Log(" Backend: dxvk_detected=%d", g_dxvkBackend ? 1 : 0);
  Log(" VRAM saved: %lld MB (%lld KB)",
  g_vramSavedBytes.load() / (1024 * 1024),
  g_vramSavedBytes.load() / 1024);

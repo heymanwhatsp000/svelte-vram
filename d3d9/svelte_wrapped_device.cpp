@@ -2,8 +2,26 @@
 #include "svelte_wrapped_device.h"
 #include "svelte_util.h"
 #include "svelte_strip.h"
-#include "svelte_registry.h"
-#include "svelte_texture_manager.h" // sysmem backing + stripped VRAM
+#include "svelte_registry.h" // stripped-texture registry
+#include "svelte_wrapped_texture.h" // WrappedTexture9 (transient buffer approach)
+
+// Frame timing using QueryPerformanceCounter
+static LARGE_INTEGER g_perfFreq = {0};
+static LARGE_INTEGER g_lastFrameTime = {0};
+static void InitFrameTimer() {
+ if (g_perfFreq.QuadPart == 0) {
+ QueryPerformanceFrequency(&g_perfFreq);
+ QueryPerformanceCounter(&g_lastFrameTime);
+ }
+}
+static long long GetFrameDeltaUs() {
+ if (g_perfFreq.QuadPart == 0) return 0;
+ LARGE_INTEGER now;
+ QueryPerformanceCounter(&now);
+ long long delta = (now.QuadPart - g_lastFrameTime.QuadPart) * 1000000 / g_perfFreq.QuadPart;
+ g_lastFrameTime = now;
+ return delta;
+}
 
 WrappedDevice9::WrappedDevice9(IDirect3DDevice9* real) : m_real(real), m_realEx(NULL), m_refCount(1) {
  real->QueryInterface(__uuidof(IDirect3DDevice9Ex), (void**)&m_realEx);
@@ -38,10 +56,10 @@ ULONG STDMETHODCALLTYPE WrappedDevice9::Release() {
 }
 
 // CreateTexture - interception point (mip stripping)
-// System Memory Backing approach.
-// D3D9 creates textures EMPTY. The game fills via LockRect/UpdateTexture.
-// We create 3 textures: full sysmem (returned to game), stripped staging,
-// and stripped VRAM. Copy happens at SetTexture time via UpdateTexture.
+//
+// Creates ONE stripped texture and wraps it in WrappedTexture9. The wrapper
+// uses transient buffers for stripped mip levels — zero permanent RAM,
+// works on both DXVK and native D3D9On12.
 HRESULT STDMETHODCALLTYPE WrappedDevice9::CreateTexture(UINT Width, UINT Height, UINT Levels, DWORD Usage,
  D3DFORMAT Format, D3DPOOL Pool,
  IDirect3DTexture9** ppTexture, HANDLE* pSharedHandle) {
@@ -64,29 +82,53 @@ HRESULT STDMETHODCALLTYPE WrappedDevice9::CreateTexture(UINT Width, UINT Height,
  desc.Format = Format;
 
  UINT newLevels = Levels, newW = Width, newH = Height;
+ // Measure strip time for perf logging
+ LARGE_INTEGER stripStart, stripEnd, stripFreq;
+ QueryPerformanceFrequency(&stripFreq);
+ QueryPerformanceCounter(&stripStart);
  int stripped = StripMips9(&desc, &newLevels, &newW, &newH);
+ QueryPerformanceCounter(&stripEnd);
+ if (stripped > 0) {
+ long long stripUs = (stripEnd.QuadPart - stripStart.QuadPart) * 1000000 / stripFreq.QuadPart;
+ PerfRecordStrip(stripUs);
+ }
+
+ if (stripped == 0) {
+ // Texture passed through the safety filter but was not stripped
+ // (either didn't need stripping, or was rejected by a condition).
+ // Track it for stats. Note: exclusion-list skips are counted
+ // separately in g_texturesSkippedByExclusion (incremented in svelte_strip.cpp).
+ g_texturesSkipped.fetch_add(1);
+ }
 
  if (stripped > 0 && (Pool == D3DPOOL_DEFAULT || Pool == D3DPOOL_MANAGED) && !pSharedHandle) {
- // System Memory Backing approach.
- // Create a full-size D3DPOOL_SYSTEMMEM texture (returned to game)
- // + a stripped D3DPOOL_DEFAULT texture (used for rendering).
- // Game sees full dimensions via GetLevelDesc/GetLevelCount -> no crash.
- // VRAM only holds the smaller stripped texture.
- IDirect3DTexture9* sysmemTex = NULL;
- HRESULT hr = CreateStrippedPair(m_real, Width, Height, Levels, Usage, Format,
- newW, newH, newLevels, stripped, &sysmemTex);
- if (SUCCEEDED(hr) && sysmemTex) {
+ // Single path: create ONE stripped texture, wrap in WrappedTexture9.
+ // The wrapper uses transient buffers for stripped mip levels — zero
+ // permanent RAM, works on both DXVK and native D3D9On12.
+ IDirect3DTexture9* realStrippedTex = NULL;
+ HRESULT hr = m_real->CreateTexture(newW, newH, newLevels, Usage, Format, Pool, &realStrippedTex, pSharedHandle);
+ if (SUCCEEDED(hr) && realStrippedTex) {
+ StrippedTexEntry entry;
+ entry.originalLevels = Levels;
+ entry.originalWidth  = Width;
+ entry.originalHeight = Height;
+ entry.mipsStripped   = stripped;
+ entry.format         = Format;
+ RegisterStrippedTexture((IDirect3DBaseTexture9*)realStrippedTex, entry);
+
+ WrappedTexture9* wrapped = new WrappedTexture9(realStrippedTex, entry, Pool);
+
  g_texturesStripped.fetch_add(1);
 
  UINT origBytes = CalcTextureBytes(Width, Height, Levels, Format);
- UINT newBytes = CalcTextureBytes(newW, newH, newLevels, Format);
+ UINT newBytes  = CalcTextureBytes(newW, newH, newLevels, Format);
  long long saved = (long long)origBytes - (long long)newBytes;
  g_vramSavedBytes.fetch_add(saved);
 
- *ppTexture = sysmemTex;
+ *ppTexture = wrapped;
 
  if (g_logLevel >= 1) {
- Log("StripMips: %ux%u/%u → %ux%u/%u fmt=%s stripped=%d saved=%uKB (total=%lldMB)",
+ Log("StripMips: %ux%u/%u -> %ux%u/%u fmt=%s stripped=%d saved=%uKB (total=%lldMB)",
  Width, Height, Levels, newW, newH, newLevels, FormatName(Format),
  stripped, (UINT)(saved / 1024), g_vramSavedBytes.load() / (1024 * 1024));
  }
@@ -116,12 +158,24 @@ BOOL STDMETHODCALLTYPE WrappedDevice9::ShowCursor(BOOL bShow) { return m_real->S
 HRESULT STDMETHODCALLTYPE WrappedDevice9::CreateAdditionalSwapChain(D3DPRESENT_PARAMETERS* pPresentationParameters, IDirect3DSwapChain9** pSwapChain) { return m_real->CreateAdditionalSwapChain(pPresentationParameters, pSwapChain); }
 HRESULT STDMETHODCALLTYPE WrappedDevice9::GetSwapChain(UINT iSwapChain, IDirect3DSwapChain9** pSwapChain) { return m_real->GetSwapChain(iSwapChain, pSwapChain); }
 UINT STDMETHODCALLTYPE WrappedDevice9::GetNumberOfSwapChains() { return m_real->GetNumberOfSwapChains(); }
-HRESULT STDMETHODCALLTYPE WrappedDevice9::Reset(D3DPRESENT_PARAMETERS* pPresentationParameters) { return m_real->Reset(pPresentationParameters); }
+HRESULT STDMETHODCALLTYPE WrappedDevice9::Reset(D3DPRESENT_PARAMETERS* pPresentationParameters) {
+ // Prepare all wrappers before Reset. Reset destroys DEFAULT-pool textures.
+ // Our wrappers hold pointers to those textures. We must release and null
+ // them BEFORE Reset, otherwise the game's later Release on the wrapper
+ // calls Release on a destroyed texture -> use-after-free -> crash.
+ WrappedTexture9::PrepareForDeviceReset();
+ return m_real->Reset(pPresentationParameters);
+}
 HRESULT STDMETHODCALLTYPE WrappedDevice9::Present(const RECT* pSourceRect, const RECT* pDestRect, HWND hDestWindowOverride, const RGNDATA* pDirtyRegion) {
+ InitFrameTimer();
+ long long frameDelta = GetFrameDeltaUs();
+ PerfUpdate(frameDelta);
+
  g_frameCount.fetch_add(1);
- // Periodic LRU sweep (every 300 frames)
+ // Periodic LRU sweep + perf log (every 300 frames)
  if (g_frameCount.load() % 300 == 0) {
- MaybeSweepTexPairs(g_frameCount.load());
+ PerfLogAndReset();
+ MaybeSweepStrippedMap(g_frameCount.load());
  }
  return m_real->Present(pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion);
 }
@@ -138,12 +192,10 @@ HRESULT STDMETHODCALLTYPE WrappedDevice9::CreateRenderTarget(UINT Width, UINT He
 HRESULT STDMETHODCALLTYPE WrappedDevice9::CreateDepthStencilSurface(UINT Width, UINT Height, D3DFORMAT Format, D3DMULTISAMPLE_TYPE MultiSample, DWORD MultisampleQuality, BOOL Discard, IDirect3DSurface9** ppSurface, HANDLE* pSharedHandle) { return m_real->CreateDepthStencilSurface(Width, Height, Format, MultiSample, MultisampleQuality, Discard, ppSurface, pSharedHandle); }
 HRESULT STDMETHODCALLTYPE WrappedDevice9::UpdateSurface(IDirect3DSurface9* pSourceSurface, const RECT* pSourceRect, IDirect3DSurface9* pDestinationSurface, const POINT* pDestPoint) { return m_real->UpdateSurface(pSourceSurface, pSourceRect, pDestinationSurface, pDestPoint); }
 HRESULT STDMETHODCALLTYPE WrappedDevice9::UpdateTexture(IDirect3DBaseTexture9* pSourceTexture, IDirect3DBaseTexture9* pDestinationTexture) {
- // If destination is one of our sysmem textures, mark it dirty
- if (pDestinationTexture) {
- TexPair* pair = LookupTexPair(pDestinationTexture);
- if (pair) pair->dirty = true;
- }
- return m_real->UpdateTexture(pSourceTexture, pDestinationTexture);
+ // Unwrap both textures before passing to m_real.
+ IDirect3DBaseTexture9* realSrc = WrappedTexture9::UnwrapIfWrapper(pSourceTexture);
+ IDirect3DBaseTexture9* realDst = WrappedTexture9::UnwrapIfWrapper(pDestinationTexture);
+ return m_real->UpdateTexture(realSrc, realDst);
 }
 HRESULT STDMETHODCALLTYPE WrappedDevice9::GetRenderTargetData(IDirect3DSurface9* pRenderTarget, IDirect3DSurface9* pDestSurface) { return m_real->GetRenderTargetData(pRenderTarget, pDestSurface); }
 HRESULT STDMETHODCALLTYPE WrappedDevice9::GetFrontBufferData(UINT iSwapChain, IDirect3DSurface9* pDestSurface) { return m_real->GetFrontBufferData(iSwapChain, pDestSurface); }
@@ -177,23 +229,31 @@ HRESULT STDMETHODCALLTYPE WrappedDevice9::BeginStateBlock() { return m_real->Beg
 HRESULT STDMETHODCALLTYPE WrappedDevice9::EndStateBlock(IDirect3DStateBlock9** ppSB) { return m_real->EndStateBlock(ppSB); }
 HRESULT STDMETHODCALLTYPE WrappedDevice9::SetClipStatus(const D3DCLIPSTATUS9* pClipStatus) { return m_real->SetClipStatus(pClipStatus); }
 HRESULT STDMETHODCALLTYPE WrappedDevice9::GetClipStatus(D3DCLIPSTATUS9* pClipStatus) { return m_real->GetClipStatus(pClipStatus); }
-HRESULT STDMETHODCALLTYPE WrappedDevice9::GetTexture(DWORD Stage, IDirect3DBaseTexture9** ppTexture) { return m_real->GetTexture(Stage, ppTexture); }
+HRESULT STDMETHODCALLTYPE WrappedDevice9::GetTexture(DWORD Stage, IDirect3DBaseTexture9** ppTexture) {
+ HRESULT hr = m_real->GetTexture(Stage, ppTexture);
+ // If the returned texture is one of our stripped real textures,
+ // re-wrap it so the game sees the wrapper (with the mip-count lie).
+ if (SUCCEEDED(hr) && ppTexture && *ppTexture) {
+ // FindByReal returns an AddRef'd wrapper (or NULL if not a stripped texture).
+ WrappedTexture9* wrapper = WrappedTexture9::FindByReal(*ppTexture);
+ if (wrapper) {
+ // Release the real texture (GetTexture AddRef'd it).
+ // The wrapper is already AddRef'd by FindByReal — return it directly.
+ (*ppTexture)->Release();
+ *ppTexture = wrapper;
+ }
+ }
+ return hr;
+}
 HRESULT STDMETHODCALLTYPE WrappedDevice9::SetTexture(DWORD Stage, IDirect3DBaseTexture9* pTexture) {
  if (!pTexture) return m_real->SetTexture(Stage, pTexture);
 
- // Check if this is a sysmem-backed stripped texture
- TexPair* pair = LookupTexPair(pTexture);
- if (pair) {
- // Update last access for LRU
- pair->lastAccess = g_frameCount.load();
- // Copy data from sysmem to VRAM (skipped if not dirty)
- CopySysmemToVRAM(m_real, pair);
- // Bind the VRAM texture (smaller, saves VRAM)
- return m_real->SetTexture(Stage, pair->vramTex);
- }
-
- // Not a stripped texture - pass through
- return m_real->SetTexture(Stage, pTexture);
+ // Unwrap WrappedTexture9 before passing to m_real. The wrapper's
+ // GetLevelCount() returns the original count (the lie), which would
+ // confuse DXVK/driver descriptor sizing. UnwrapIfWrapper returns the
+ // real underlying texture if pTexture is a wrapper, or unchanged if not.
+ IDirect3DBaseTexture9* realTex = WrappedTexture9::UnwrapIfWrapper(pTexture);
+ return m_real->SetTexture(Stage, realTex);
 }
 HRESULT STDMETHODCALLTYPE WrappedDevice9::GetTextureStageState(DWORD Stage, D3DTEXTURESTAGESTATETYPE Type, DWORD* pValue) { return m_real->GetTextureStageState(Stage, Type, pValue); }
 HRESULT STDMETHODCALLTYPE WrappedDevice9::SetTextureStageState(DWORD Stage, D3DTEXTURESTAGESTATETYPE Type, DWORD Value) { return m_real->SetTextureStageState(Stage, Type, Value); }
@@ -253,9 +313,14 @@ HRESULT STDMETHODCALLTYPE WrappedDevice9::CreateQuery(D3DQUERYTYPE Type, IDirect
 HRESULT STDMETHODCALLTYPE WrappedDevice9::SetConvolutionMonoKernel(UINT width, UINT height, float* rows, float* columns) { return m_realEx ? m_realEx->SetConvolutionMonoKernel(width, height, rows, columns) : E_NOTIMPL; }
 HRESULT STDMETHODCALLTYPE WrappedDevice9::ComposeRects(IDirect3DSurface9* pSrc, IDirect3DSurface9* pDst, IDirect3DVertexBuffer9* pSrcRectDescs, UINT NumRects, IDirect3DVertexBuffer9* pDstRectDescs, D3DCOMPOSERECTSOP Operation, int Xoffset, int Yoffset) { return m_realEx ? m_realEx->ComposeRects(pSrc, pDst, pSrcRectDescs, NumRects, pDstRectDescs, Operation, Xoffset, Yoffset) : E_NOTIMPL; }
 HRESULT STDMETHODCALLTYPE WrappedDevice9::PresentEx(const RECT* pSourceRect, const RECT* pDestRect, HWND hDestWindowOverride, const RGNDATA* pDirtyRegion, DWORD dwFlags) {
+ InitFrameTimer();
+ long long frameDelta = GetFrameDeltaUs();
+ PerfUpdate(frameDelta);
+
  g_frameCount.fetch_add(1);
  if (g_frameCount.load() % 300 == 0) {
- MaybeSweepTexPairs(g_frameCount.load());
+ PerfLogAndReset();
+ MaybeSweepStrippedMap(g_frameCount.load());
  }
  return m_realEx ? m_realEx->PresentEx(pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion, dwFlags) : E_NOTIMPL;
 }
@@ -270,5 +335,9 @@ HRESULT STDMETHODCALLTYPE WrappedDevice9::CheckDeviceState(HWND hDestinationWind
 HRESULT STDMETHODCALLTYPE WrappedDevice9::CreateRenderTargetEx(UINT Width, UINT Height, D3DFORMAT Format, D3DMULTISAMPLE_TYPE MultiSample, DWORD MultisampleQuality, BOOL Lockable, IDirect3DSurface9** ppSurface, HANDLE* pSharedHandle, DWORD Usage) { return m_realEx ? m_realEx->CreateRenderTargetEx(Width, Height, Format, MultiSample, MultisampleQuality, Lockable, ppSurface, pSharedHandle, Usage) : E_NOTIMPL; }
 HRESULT STDMETHODCALLTYPE WrappedDevice9::CreateOffscreenPlainSurfaceEx(UINT Width, UINT Height, D3DFORMAT Format, D3DPOOL Pool, IDirect3DSurface9** ppSurface, HANDLE* pSharedHandle, DWORD Usage) { return m_realEx ? m_realEx->CreateOffscreenPlainSurfaceEx(Width, Height, Format, Pool, ppSurface, pSharedHandle, Usage) : E_NOTIMPL; }
 HRESULT STDMETHODCALLTYPE WrappedDevice9::CreateDepthStencilSurfaceEx(UINT Width, UINT Height, D3DFORMAT Format, D3DMULTISAMPLE_TYPE MultiSample, DWORD MultisampleQuality, BOOL Discard, IDirect3DSurface9** ppSurface, HANDLE* pSharedHandle, DWORD Usage) { return m_realEx ? m_realEx->CreateDepthStencilSurfaceEx(Width, Height, Format, MultiSample, MultisampleQuality, Discard, ppSurface, pSharedHandle, Usage) : E_NOTIMPL; }
-HRESULT STDMETHODCALLTYPE WrappedDevice9::ResetEx(D3DPRESENT_PARAMETERS* pPresentationParameters, D3DDISPLAYMODEEX* pFullscreenDisplayMode) { return m_realEx ? m_realEx->ResetEx(pPresentationParameters, pFullscreenDisplayMode) : E_NOTIMPL; }
+HRESULT STDMETHODCALLTYPE WrappedDevice9::ResetEx(D3DPRESENT_PARAMETERS* pPresentationParameters, D3DDISPLAYMODEEX* pFullscreenDisplayMode) {
+ // Prepare all wrappers before ResetEx (same as Reset).
+ WrappedTexture9::PrepareForDeviceReset();
+ return m_realEx ? m_realEx->ResetEx(pPresentationParameters, pFullscreenDisplayMode) : E_NOTIMPL;
+}
 HRESULT STDMETHODCALLTYPE WrappedDevice9::GetDisplayModeEx(UINT iSwapChain, D3DDISPLAYMODEEX* pMode, D3DDISPLAYROTATION* pRotation) { return m_realEx ? m_realEx->GetDisplayModeEx(iSwapChain, pMode, pRotation) : E_NOTIMPL; }

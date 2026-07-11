@@ -1,0 +1,31 @@
+# Svelte D3D9 Texture Exclusion List
+# ===================================
+#
+# One pattern per line. Lines starting with # or ; are comments.
+# Blank lines are skipped.
+#
+# Patterns are SUBSTRING-MATCHED against the texture fingerprint.
+# Fingerprint format: WIDTHxHEIGHT_FORMAT_mipLEVELS (lowercase)
+#
+# Examples:
+#   4096x4096_DXT5_mip13     matches ONLY 4K DXT5 textures with 13 mips
+#   4096x4096                matches ALL 4K textures (any format/mip count)
+#   DXT5_mip13               matches ALL 13-mip DXT5 textures (any size)
+#   2048x2048_DXT1           matches 2K DXT1 textures (any mip count)
+#
+# D3D9 format names: DXT1, DXT3, DXT5
+# (D3D9 does not have BC4/BC5/BC6H/BC7)
+#
+# When a texture matches a pattern, Svelte does NOT strip it.
+# The texture is created at full resolution and uses full VRAM.
+#
+# Use cases:
+#   - Exclude specific UI textures that look bad when stripped
+#   - Exclude specific mod textures that crash when stripped
+#   - Exclude large textures where you want full quality
+#
+# Zero cost: if this file is empty or missing, no exclusion checking happens.
+
+# Example patterns (uncomment to enable):
+# 4096x4096_DXT5_mip13
+# 2048x2048_DXT1_mip11

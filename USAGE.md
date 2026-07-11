@@ -33,6 +33,26 @@ Launch normally. No special launcher, no command-line flags.
 
 Check the game folder for `svelte.log`. The first lines should show Svelte loaded with config summary.
 
+## Using Svelte with DXVK (D3D9 games only)
+
+DXVK translates D3D9 to Vulkan, often improving performance on modern GPUs.
+Svelte works with DXVK out of the box — no special config needed.
+
+### Setup with DXVK
+
+1. Install DXVK per its instructions.
+2. Rename DXVK's `d3d9.dll` to `d3d9_dxvk.dll`.
+3. Drop Svelte's `d3d9.dll` and `svelte.ini` into the game folder.
+4. Svelte auto-detects `d3d9_dxvk.dll` and chains to it.
+5. Check `svelte.log` for `Backend: dxvk_detected=1` to confirm.
+
+### Setup with ENB + DXVK
+
+1. Rename ENB's `d3d9.dll` to `d3d9_enb.dll`.
+2. Rename DXVK's `d3d9.dll` to `d3d9_dxvk.dll`.
+3. Drop Svelte's `d3d9.dll` into the game folder.
+4. Svelte chains to ENB, which chains to DXVK.
+
 ## Configuration
 
 Edit `svelte.ini` in the game folder:

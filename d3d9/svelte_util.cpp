@@ -1,11 +1,11 @@
-// svelte_util.cpp - Config, logging, BCn helpers
+// svelte_util.cpp - Config, logging, BCn helpers, exclusions
 #include "svelte_util.h"
+#include "svelte_strip.h" // for D3D9_TEXTURE_DESC (used by IsExcluded)
 #include <stdio.h>
 #include <stdarg.h>
 #include <ctype.h>
 
-// Version
-const char* SVELTE_VERSION = "v1.0";
+const char* SVELTE_VERSION = "v1.2.0";
 
 // Config globals
 bool g_initialized = false;
@@ -13,6 +13,101 @@ bool g_enabled = true;
 int g_maxResolution = 1024; // single knob
 int g_minTexDim = 64; // D3D9 textures are often smaller, lower floor
 int g_logLevel = 1; // default to basic logging
+
+// Backend detection (for logging only — single code path)
+bool g_dxvkBackend = false;
+
+// Exclusion list counter
+std::atomic<int> g_texturesSkippedByExclusion{0};
+
+// Performance tracking
+FrameTimeStats g_perf = {0, 0, 0, 0, 0, 0, 0};
+
+void PerfUpdate(long long frameDeltaUs) {
+    if (frameDeltaUs <= 0) return;
+    if (g_perf.frameCount == 0) {
+        g_perf.minFrameUs = frameDeltaUs;
+        g_perf.maxFrameUs = frameDeltaUs;
+        g_perf.avgFrameUs = frameDeltaUs;
+    } else {
+        if (frameDeltaUs < g_perf.minFrameUs) g_perf.minFrameUs = frameDeltaUs;
+        if (frameDeltaUs > g_perf.maxFrameUs) g_perf.maxFrameUs = frameDeltaUs;
+        g_perf.avgFrameUs = (g_perf.avgFrameUs * g_perf.frameCount + frameDeltaUs) / (g_perf.frameCount + 1);
+    }
+    g_perf.frameCount++;
+    // Stutter = frame took longer than 33ms (below 30fps)
+    if (frameDeltaUs > 33000) {
+        g_perf.stutterCount++;
+    }
+}
+
+void PerfRecordStrip(long long stripUs) {
+    g_perf.totalStripTimeUs += stripUs;
+    g_perf.stripCallCount++;
+}
+
+void PerfLogAndReset() {
+    if (g_perf.frameCount == 0) return;
+    Log("Perf: frames=%lld min=%.1fms avg=%.1fms max=%.1fms stutters(>33ms)=%lld | strips=%lld totalStripTime=%.1fms avgStrip=%.1fus",
+        g_perf.frameCount,
+        g_perf.minFrameUs / 1000.0,
+        g_perf.avgFrameUs / 1000.0,
+        g_perf.maxFrameUs / 1000.0,
+        g_perf.stutterCount,
+        g_perf.stripCallCount,
+        g_perf.totalStripTimeUs / 1000.0,
+        g_perf.stripCallCount > 0 ? (double)g_perf.totalStripTimeUs / g_perf.stripCallCount : 0.0);
+    // Reset for next window
+    g_perf = {0, 0, 0, 0, 0, 0, 0};
+}
+
+// Exclusion patterns - loaded once from svelte_exclusions.txt, read-only after init.
+// Rationale for NO LOCK: populated only in LoadConfig() (single-threaded
+// DLL_PROCESS_ATTACH). After that, read-only. Multiple threads can read
+// a std::vector safely as long as no thread writes.
+static std::vector<std::string> g_exclusionPatterns;
+
+// Load exclusion patterns from svelte_exclusions.txt.
+// Format: one pattern per line. Lines starting with # or ; are comments.
+// Blank lines skipped. Patterns are lowercased on load.
+// Patterns are substring-matched against the texture fingerprint.
+static void LoadExclusions(const char* path) {
+ FILE* f = fopen(path, "r");
+ if (!f) return;
+ char line[256];
+ while (fgets(line, sizeof(line), f)) {
+ char* p = line;
+ while (*p && isspace((unsigned char)*p)) p++;
+ if (*p == '#' || *p == ';' || *p == '\0') continue;
+ size_t len = strlen(p);
+ while (len > 0 && isspace((unsigned char)p[len-1])) { p[--len] = 0; }
+ if (len == 0) continue;
+ std::string pat(p);
+ for (auto& c : pat) c = (char)tolower(c);
+ g_exclusionPatterns.push_back(pat);
+ }
+ fclose(f);
+ Log("Loaded %d exclusion patterns from %s", (int)g_exclusionPatterns.size(), path);
+}
+
+// Check if a texture matches any exclusion pattern.
+// Returns true if the texture should NOT be stripped.
+// Fingerprint format: "WIDTHxHEIGHT_FORMAT_mipLEVELS" (lowercase)
+// Example: "4096x4096_DXT5_mip13"
+// Early return on empty pattern list (zero-cost when no exclusions loaded).
+bool IsExcluded(const D3D9_TEXTURE_DESC* pDesc) {
+ if (g_exclusionPatterns.empty()) return false;
+
+ char fp[128];
+ snprintf(fp, sizeof(fp), "%ux%u_%s_mip%u",
+ pDesc->Width, pDesc->Height, FormatName(pDesc->Format), pDesc->Levels);
+ std::string fps(fp);
+ for (auto& c : fps) c = (char)tolower(c);
+ for (const auto& pat : g_exclusionPatterns) {
+ if (fps.find(pat) != std::string::npos) return true;
+ }
+ return false;
+}
 
 char g_dllDir[MAX_PATH] = {0};
 
@@ -74,8 +169,16 @@ void LoadConfig() {
  fprintf(g_logFile, "\n=== Svelte %s (D3D9 Proxy - Mip Stripping) ===\n", SVELTE_VERSION);
  fprintf(g_logFile, "Config: enabled=%d max_resolution=%d min_tex=%d log=%d\n",
  g_enabled ? 1 : 0, g_maxResolution, g_minTexDim, g_logLevel);
+ fprintf(g_logFile, "Backend: dxvk_detected=%d (single-path, no mode switch)\n",
+ g_dxvkBackend ? 1 : 0);
  fflush(g_logFile);
  }
+
+ // Load exclusion patterns (if svelte_exclusions.txt exists)
+ char exclPath[MAX_PATH];
+ snprintf(exclPath, MAX_PATH, "%s\\svelte_exclusions.txt", g_dllDir);
+ LoadExclusions(exclPath);
+
  g_initialized = true;
 }
 
